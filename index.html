@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SiteGap Lead Collector</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080b12;color:#edf5ff;font-family:Arial,sans-serif;padding:20px}
+.wrap{max-width:1100px;margin:auto}
+h1{color:#00d9ff}
+.panel{background:#101724;border:1px solid #17415a;border-radius:16px;padding:18px;margin:15px 0;box-shadow:0 0 15px #00d9ff15}
+input,select,button{width:100%;padding:13px;margin:7px 0;border-radius:9px;border:1px solid #34445b;background:#080f1b;color:white;font-size:16px}
+button{background:#087eae;border:0;font-weight:bold;cursor:pointer}
+button:disabled{opacity:.5}
+.secondary{background:#252e40}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stat{background:#0b1421;padding:14px;border-radius:10px;text-align:center}
+.stat strong{display:block;color:#00d9ff;font-size:25px;margin-top:5px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:10px;border-bottom:1px solid #293649;text-align:left}
+.tablewrap{overflow-x:auto}
+small,.muted{color:#9baabd}
+#status{white-space:pre-wrap;color:#00d9ff}
+@media(max-width:600px){body{padding:12px}.stats{grid-template-columns:1fr 1fr}table{min-width:700px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>⚡ SiteGap Lead Collector</h1>
+<p class="muted">Поиск организаций России по открытым данным OpenStreetMap</p>
+
+<div class="panel">
+<h3>Настройки поиска</h3>
+<label>Город или населённый пункт</label>
+<input id="city" placeholder="Например: Казань, Россия">
+
+<label>Категория</label>
+<select id="category">
+<option value="all">Все категории</option>
+<option value="cafe">Кафе и рестораны</option>
+<option value="beauty">Салоны красоты</option>
+<option value="auto">Автосервисы</option>
+<option value="shop">Магазины</option>
+<option value="health">Медицина и стоматология</option>
+<option value="hotel">Гостиницы</option>
+<option value="fitness">Фитнес</option>
+</select>
+
+<label>Радиус поиска</label>
+<select id="radius">
+<option value="5000">5 км</option>
+<option value="10000" selected>10 км</option>
+<option value="20000">20 км</option>
+<option value="30000">30 км</option>
+</select>
+
+<label><input type="checkbox" id="phoneOnly" style="width:auto"> Только организации с телефоном</label>
+<button id="searchBtn" onclick="searchPlaces()">Начать поиск</button>
+<p id="status">Готов к поиску.</p>
+</div>
+
+<div class="panel">
+<h3>Результаты</h3>
+<div class="stats">
+<div class="stat">Найдено<strong id="total">0</strong></div>
+<div class="stat">С телефоном<strong id="phones">0</strong></div>
+<div class="stat">Цель<strong>300</strong></div>
+</div>
+<p class="muted">Цель — 300 уникальных записей. Фактическое количество зависит от полноты OpenStreetMap.</p>
+<button onclick="downloadCSV()">Скачать CSV</button>
+<button class="secondary" onclick="clearResults()">Очистить результаты</button>
+</div>
+
+<div class="panel">
+<h3>Список организаций</h3>
+<div class="tablewrap">
+<table>
+<thead><tr>
+<th>Название</th><th>Категория</th><th>Телефон</th><th>Город</th><th>Адрес</th><th>Сайт</th>
+</tr></thead>
+<tbody id="results"></tbody>
+</table>
+</div>
+</div>
+<p class="muted">Источник: © OpenStreetMap contributors. Отсутствие сайта в OpenStreetMap не доказывает, что у организации нет собственного сайта.</p>
+</div>
+
+<script>
+let places = JSON.parse(localStorage.getItem("sitegap_places") || "[]");
+
+function tagCategory(t){
+ if(t.amenity==="cafe"||t.amenity==="restaurant"||t.amenity==="fast_food") return "Кафе и рестораны";
+ if(t.shop==="beauty"||t.shop==="hairdresser") return "Салоны красоты";
+ if(t.shop==="car_repair"||t.amenity==="car_wash") return "Автосервисы";
+ if(t.shop) return "Магазины";
+ if(t.amenity==="dentist"||t.amenity==="doctors"||t.healthcare) return "Медицина";
+ if(t.tourism==="hotel"||t.tourism==="guest_house") return "Гостиницы";
+ if(t.leisure==="fitness_centre") return "Фитнес";
+ return t.amenity || t.shop || t.office || t.craft || "Другое";
+}
+
+function matchesCategory(t, c){
+ if(c==="all") return true;
+ if(c==="cafe") return ["cafe","restaurant","fast_food"].includes(t.amenity);
+ if(c==="beauty") return ["beauty","hairdresser"].includes(t.shop);
+ if(c==="auto") return ["car_repair"].includes(t.shop)||t.amenity==="car_wash";
+ if(c==="shop") return !!t.shop;
+ if(c==="health") return ["dentist","doctors","clinic","hospital"].includes(t.amenity)||!!t.healthcare;
+ if(c==="hotel") return ["hotel","guest_house"].includes(t.tourism);
+ if(c==="fitness") return t.leisure==="fitness_centre";
+ return true;
+}
+
+function addressFrom(t){
+ return [t["addr:street"],t["addr:housenumber"],t["addr:city"]||t["addr:place"]].filter(Boolean).join(", ");
+}
+
+function render(){
+ document.getElementById("total").textContent=places.length;
+ document.getElementById("phones").textContent=places.filter(p=>p.phone).length;
+ document.getElementById("results").innerHTML=places.map(p=>
+ `<tr><td>${esc(p.name)}</td><td>${esc(p.category)}</td><td>${esc(p.phone)}</td><td>${esc(p.city)}</td><td>${esc(p.address)}</td><td>${esc(p.website)}</td></tr>`
+ ).join("");
+ localStorage.setItem("sitegap_places",JSON.stringify(places));
+}
+
+function esc(s){
+ return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+async function searchPlaces(){
+ const city=document.getElementById("city").value.trim();
+ if(!city){alert("Введи название города.");return;}
+ const btn=document.getElementById("searchBtn");
+ const status=document.getElementById("status");
+ btn.disabled=true;
+ try{
+  status.textContent="Определяю координаты города...";
+  const geo=await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q="+encodeURIComponent(city));
+  if(!geo.ok) throw new Error("Не удалось выполнить геопоиск. Попробуй позже.");
+  const locations=await geo.json();
+  if(!locations.length) throw new Error("Город не найден. Уточни название.");
+  const lat=Number(locations[0].lat), lon=Number(locations[0].lon);
+  const radius=Number(document.getElementById("radius").value);
+  const category=document.getElementById("category").value;
+  const phoneOnly=document.getElementById("phoneOnly").checked;
+
+  status.textContent="Запрашиваю OpenStreetMap. Это может занять несколько минут...";
+  const query=`[out:json][timeout:90];(nwr["name"]["website"!~"."]["contact:website"!~"."](around:${radius},${lat},${lon}););out center tags;`;
+  const response=await fetch("https://overpass-api.de/api/interpreter",{
+   method:"POST",
+   headers:{"Content-Type":"application/x-www-form-urlencoded"},
+   body:"data="+encodeURIComponent(query)
+  });
+  if(!response.ok) throw new Error("Сервис OpenStreetMap временно недоступен. Попробуй позже.");
+  const data=await response.json();
+  let added=0;
+  for(const el of data.elements||[]){
+   const t=el.tags||{};
+   if(!t.name||!matchesCategory(t,category)) continue;
+   const phone=t.phone||t["contact:phone"]||"";
+   if(phoneOnly&&!phone) continue;
+   const id=el.type+"/"+el.id;
+   if(places.some(p=>p.osm_id===id)) continue;
+   const center=el.center||el;
+   places.push({
+    name:t.name,
+    category:tagCategory(t),
+    phone,
+    city:city,
+    region:t["addr:region"]||"",
+    address:addressFrom(t),
+    owner_name:"",
+    website:t.website||t["contact:website"]||"",
+    website_status:"not_listed",
+    latitude:center.lat||"",
+    longitude:center.lon||"",
+    source:"OpenStreetMap",
+    osm_id:id,
+    collected_at:new Date().toISOString()
+   });
+   added++;
+  }
+  render();
+  status.textContent=`Поиск завершён. Добавлено новых записей: ${added}. Всего в базе: ${places.length}.`;
+ }catch(e){
+  status.textContent="Ошибка: "+e.message;
+ }finally{
+  btn.disabled=false;
+ }
+}
+
+function downloadCSV(){
+ if(!places.length){alert("Сначала найди организации.");return;}
+ const headers=["name","category","phone","city","region","address","owner_name","website","website_status","latitude","longitude","source","osm_id","collected_at"];
+ const rows=[headers,...places.map(p=>headers.map(h=>p[h]??""))];
+ const csv="\uFEFF"+rows.map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(";")).join("\r\n");
+ const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+ const url=URL.createObjectURL(blob);
+ const a=document.createElement("a");
+ a.href=url;a.download="sitegap-organizations.csv";a.click();
+ URL.revokeObjectURL(url);
+}
+
+function clearResults(){
+ if(confirm("Удалить все сохранённые результаты?")){
+  places=[];render();
+  document.getElementById("status").textContent="Результаты очищены.";
+ }
+}
+render();
+</script>
+</body>
+</html>
